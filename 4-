@@ -1,1 +1,121 @@
+import os
+import sys
+import queue
+import platform
 
+from PyQt5 import QtWidgets, QtGui, QtCore
+import vlc
+from network import Client
+
+
+class MiniPlayer(QtWidgets.QMainWindow):
+    """Stripped-down PyQt5-based media player class to sync with "master" video.
+    """
+
+    def __init__(self, data_queue, master=None):
+        QtWidgets.QMainWindow.__init__(self, master)
+        self.setWindowTitle("Mini Player")
+        self.statusbar = self.statusBar()
+        self.statusbar.showMessage("Ready")
+
+        # Create a basic vlc instance
+        self.instance = vlc.Instance()
+
+        self.media = None
+
+        # Create an empty vlc media player
+        self.mediaplayer = self.instance.media_player_new()
+
+        self.init_ui()
+        self.open_file()
+
+        self.timer = QtCore.QTimer(self)
+        # self.timer.setInterval(10)
+        self.timer.timeout.connect(self.update_ui)
+
+        self.data_queue = data_queue
+        self.timer.start()
+
+    def init_ui(self):
+        """Set up the user interface
+        """
+        self.widget = QtWidgets.QWidget(self)
+        self.setCentralWidget(self.widget)
+
+        # In this widget, the video will be drawn
+        if platform.system() == "Darwin":  # for MacOS
+            self.videoframe = QtWidgets.QMacCocoaViewContainer(0)
+        else:
+            self.videoframe = QtWidgets.QFrame()
+
+        self.palette = self.videoframe.palette()
+        self.palette.setColor(QtGui.QPalette.Window, QtGui.QColor(0, 0, 0))
+        self.videoframe.setPalette(self.palette)
+        self.videoframe.setAutoFillBackground(True)
+
+        self.vboxlayout = QtWidgets.QVBoxLayout()
+        self.vboxlayout.addWidget(self.videoframe)
+        self.widget.setLayout(self.vboxlayout)
+
+    def open_file(self):
+        """Open a media file in a MediaPlayer
+        """
+        dialog_txt = "Choose Media File"
+        filename = QtWidgets.QFileDialog.getOpenFileName(self, dialog_txt, os.path.expanduser('~'))
+        if not filename[0]:
+            return
+
+        # getOpenFileName returns a tuple, so use only the actual file name
+        self.media = self.instance.media_new(filename[0])
+
+        # Put the media in the media player
+        self.mediaplayer.set_media(self.media)
+
+        # Set the media player to the QFrame
+        if platform.system() == "Linux":  # for Linux using the X Server
+            self.mediaplayer.set_xwindow(int(self.videoframe.winId()))
+        elif platform.system() == "Windows":  # for Windows
+            self.mediaplayer.set_hwnd(int(self.videoframe.winId()))
+        elif platform.system() == "Darwin":  # for MacOS
+            self.mediaplayer.set_nsobject(int(self.videoframe.winId()))
+
+        self.play()
+
+    def play(self):
+        """Play media from a MediaPlayer
+        """
+        if self.mediaplayer is not None:
+            self.mediaplayer.play()
+
+    def update_ui(self):
+        """Updates user interface"""
+        state = self.mediaplayer.get_state()
+        print(state)
+
+        # The vlc MediaPlayer needs to be placed somewhere, and also
+        # needs to be able to handle events. In this case, we're using a
+        # QMainWindow to house the video.
+        if state == vlc.State.Unknown:
+            pass
+        elif state == vlc.State.Error:
+            # Ideally the media player should be released and re-created when
+            # this happens, but this is unlikely to work in this case (because
+            # it's being sycned with the "master" media player).
+            pass
+        elif state == vlc.State.Ended:
+            self.mediaplayer.set_time(0)
+            self.mediaplayer.play()
+
+        # Handle sync data from "master" video.
+        try:
+            sync_data = self.data_queue.get_nowait()
+        except queue.Empty:
+            sync_data = None
+        if sync_data is not None:
+            if sync_data['cmd'] == 'pause':
+                self.mediaplayer.pause()
+            elif sync_data['cmd'] == 'play':
+                self.play()
+            elif sync_data['cmd'] == 'seek':
+                self.mediaplayer.set_time(sync_data['time'])
+           
